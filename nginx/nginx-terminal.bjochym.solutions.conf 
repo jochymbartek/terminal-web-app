@@ -1,0 +1,99 @@
+#
+#  NGINX configuration for terminal.bjochym.solutions
+#
+#  - Forces HTTPS
+#  - Serves login page if user isn't authenticated
+#  - Proxies /debian/ to ttyd on 10.0.0.4:7681
+#  - Proxies /rocky/ to ttyd on 10.0.0.10:7681
+#
+
+server {
+    listen 80;
+    server_name terminal.bjochym.solutions;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    server_name terminal.bjochym.solutions;
+
+    ssl_certificate     /etc/letsencrypt/live/terminal.bjochym.solutions/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/terminal.bjochym.solutions/privkey.pem;
+
+    root /var/www/terminal;
+    index index.php index.html;
+
+    access_log /var/log/nginx/terminal.access.log;
+    error_log  /var/log/nginx/terminal.error.log;
+
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers 'ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384';
+    ssl_prefer_server_ciphers on;
+
+    add_header X-Frame-Options "SAMEORIGIN";
+    add_header X-Content-Type-Options "nosniff";
+    add_header X-XSS-Protection "1; mode=block";
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+    add_header Referrer-Policy "no-referrer-when-downgrade";
+
+    # Serve login page at "/"
+    location = / {
+        try_files $uri /login.html =404;
+    }
+
+    # PHP-FPM for .php files
+    location ~ \.php$ {
+        include fastcgi_params;
+        fastcgi_pass unix:/run/php-fpm/www.sock;
+        fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+        fastcgi_param HTTPS on;
+    }
+
+    # Przekierowanie z "/debian" na "/debian/"
+    location = /debian {
+        return 301 /debian/;
+    }
+
+    # Proxy /debian/ do ttyd na 10.0.0.4:7681
+    location /debian/ {
+        auth_request /auth-check;
+        error_page 401 = @show_fancy_login;
+
+        proxy_pass http://10.0.0.4:7681/;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+    }
+
+    # Przekierowanie z "/rocky" na "/rocky/"
+    location = /rocky {
+        return 301 /rocky/;
+    }
+
+    # Proxy /rocky/ do ttyd na 10.0.0.10:7681
+    location /rocky/ {
+        auth_request /auth-check;
+        error_page 401 = @show_fancy_login;
+
+        proxy_pass http://10.0.0.10:7681/;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+    }
+
+    # Subrequest do sprawdzania sesji PHP
+    location = /auth-check {
+        internal;
+        include fastcgi_params;
+        fastcgi_pass unix:/run/php-fpm/www.sock;
+        fastcgi_param SCRIPT_FILENAME $document_root/auth_check.php;
+        fastcgi_param HTTPS on;
+    }
+
+    # W razie braku autoryzacji, pokaż login.html
+    location @show_fancy_login {
+        rewrite ^ /login.html break;
+    }
+}
